@@ -1,0 +1,10 @@
+# Dependencies, if anyone ever adds one.
+node_modules/
+
+# Pack artifacts.
+*.tgz
+
+# Scratch roots the tests are pointed at.
+test/.tmp/
+
+.DS_Store

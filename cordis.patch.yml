@@ -1,0 +1,29 @@
+# This bundle's contribution to a DSH profile: one row of its own.
+# It appends a top-level entry and replaces no official DSH component.
+#
+# `roots` is intentionally empty: with no root configured the plugin falls back
+# to the host working directory, and skips it unless it already holds a
+# `graphify-out/graph.json`. Point it at your projects by overriding this row in
+# the profile's cordis.patch.yml (an override replaces the whole config, so
+# restate every field you want to keep):
+#
+#   - id: graphify-watch
+#     name: dsh-plugin-graphify-watch
+#     config:
+#       enabled: true
+#       roots:
+#         - C:\Users\Administrator\Documents\my-project
+#       exePath: ""
+#       maxRestarts: 3
+#       restartBackoffMs: 2000
+#       logRebuilds: true
+- insert:
+    - id: graphify-watch
+      name: dsh-plugin-graphify-watch
+      config:
+        enabled: true
+        roots: []
+        exePath: ""
+        maxRestarts: 3
+        restartBackoffMs: 2000
+        logRebuilds: true

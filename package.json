@@ -1,0 +1,44 @@
+{
+  "name": "dsh-plugin-graphify-watch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Supervise one `graphify watch` per configured root so code changes rebuild the graphify knowledge graph automatically, from any source, with no agent cooperation.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "author": "joslyn",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joslynSmall/dsh-plugin-graphify-watch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/joslynSmall/dsh-plugin-graphify-watch/issues"
+  },
+  "homepage": "https://github.com/joslynSmall/dsh-plugin-graphify-watch#readme",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "graphify",
+    "knowledge-graph",
+    "watch"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
