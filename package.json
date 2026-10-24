@@ -4,6 +4,9 @@
   "private": true,
   "description": "Supervise one `graphify watch` per configured root so code changes rebuild the graphify knowledge graph automatically, from any source, with no agent cooperation.",
   "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js",

@@ -1,119 +1,90 @@
 /**
- * Standalone smoke test for dsh-plugin-graphify-watch.
- *
- * Drives `apply()` with a minimal fake Cordis context — the same shape the
- * loader provides (`ctx.logger`, `ctx.effect`) — so the supervision logic can be
- * exercised without mounting the plugin into a live profile.
+ * Standalone smoke test. Requires a disposable, already indexed scratch project
+ * containing src/store.py and README.md; it appends unique probes to both files
+ * and removes any old graphify-out/needs_update flag.
  *
  *   node test/smoke.mjs <root>
  *
- * Asserts, in order:
- *   1. the watcher starts and reports the pid
- *   2. editing a code file advances graph.json's mtime
- *   3. editing a doc file leaves graph.json alone and creates `needs_update`
- *   4. disposing through ctx.effect stops the watcher
- *
- * Exit code 0 = all assertions held.
+ * Verifies fresh readiness, a real added graph node, a fresh document event with
+ * an unchanged graph across debounce cycles, and awaited process-tree teardown.
+ * Any failed assertion exits nonzero; no DSH host is needed.
  */
-
-import { appendFileSync, existsSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import assert from 'node:assert/strict'
+import { appendFileSync, existsSync, unlinkSync } from 'node:fs'
 import process from 'node:process'
 import { setTimeout as delay } from 'node:timers/promises'
-
 import { apply, inject, name } from '../src/index.js'
+import {
+  DEBOUNCE_MS, WatcherProcesses, appendProbe, check, makeCtx, scratchProject,
+  snapshotGraph, waitFor, waitForProbe, waitForReady,
+} from './helpers.mjs'
 
-const root = process.argv[2]
-if (!root) {
-  console.error('usage: node test/smoke.mjs <root>')
-  process.exit(2)
-}
-
-const graphPath = join(root, 'graphify-out', 'graph.json')
-const flagPath = join(root, 'graphify-out', 'needs_update')
-const codeFile = join(root, 'src', 'store.py')
-const docFile = join(root, 'README.md')
-
-const logged = []
-const ctx = {
-  logger: {
-    info: (m) => { logged.push({ level: 'info', m }); console.log(`  info   ${m}`) },
-    warn: (m) => { logged.push({ level: 'warn', m }); console.log(`  warn   ${m}`) },
-    error: (m) => { logged.push({ level: 'error', m }); console.log(`  error  ${m}`) },
-  },
-  effect(callback) {
-    this.dispose = callback()
-    return this.dispose
-  },
-}
-
-const mtime = () => statSync(graphPath).mtimeMs
+const { root, graphPath, flagPath, codeFile, docFile } = scratchProject('smoke.mjs')
+const processes = new WatcherProcesses()
+const ctx = makeCtx('smoke', processes)
 const failures = []
-const check = (ok, label) => {
-  console.log(`${ok ? '  PASS  ' : '  FAIL  '} ${label}`)
-  if (!ok) failures.push(label)
-}
-
-async function waitFor(predicate, timeoutMs, label) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (await predicate()) return true
-    await delay(500)
-  }
-  console.log(`  (timed out after ${timeoutMs}ms waiting for: ${label})`)
-  return false
-}
+const fail = error => { failures.push(error.message); console.error(`  FAIL   ${error.stack || error}`) }
 
 console.log(`plugin: ${name}  inject=[${inject.join(', ')}]`)
-console.log(`root:   ${root}\n`)
+try {
+  apply(ctx, { enabled: true, roots: [root], logRebuilds: true })
+  check(typeof ctx.dispose === 'function', 'ctx.effect captured a disposer')
 
-const before = mtime()
-apply(ctx, { enabled: true, roots: [root], logRebuilds: true })
+  console.log('\n[1] watcher starts')
+  const watcher = await waitForReady(ctx.lines)
+  processes.capture(watcher.pid)
+  check(true, `launcher ${watcher.pid} exists and its watcher reported readiness`)
 
-console.log('\n[1] watcher starts')
-check(await waitFor(() => logged.some((l) => l.m.includes('watching ')), 15_000, 'watching log line'), 'watcher reported a pid')
-// The plugin's own line only proves the process was spawned. graphify builds its
-// ignore patterns and starts the observer afterwards, and an edit made in that
-// window is missed outright — so wait for the child's readiness banner.
-check(
-  await waitFor(() => logged.some((l) => l.m.includes('press Ctrl+C to stop')), 30_000, 'child readiness banner'),
-  'child reported it is watching (streamed, unbuffered)',
-)
+  console.log('\n[2] code change adds a graph symbol')
+  const beforeCode = snapshotGraph(graphPath)
+  const codeCursor = ctx.lines.length
+  const symbol = appendProbe(codeFile, 'smoke_test')
+  await waitForProbe(graphPath, beforeCode, symbol, ctx.lines, codeCursor)
+  check(true, `graph.json contains the new symbol node ${symbol}, with changed content and mtime`)
 
-console.log('\n[2] code change rebuilds the graph')
-// A comment-only edit is not enough: graphify re-extracts, finds no topology
-// change ("No code-graph topology changes detected; outputs left untouched")
-// and correctly leaves graph.json alone. Add a symbol so the graph must change.
-appendFileSync(codeFile, [
-  '',
-  'def smoke_test_probe(store):',
-  '    # WHY: appended by the smoke test to force a real topology change',
-  "    return store.put('probe', '1')",
-  '',
-].join('\n'), 'utf8')
-const rebuilt = await waitFor(() => {
-  try { return mtime() !== before } catch { return false }
-}, 90_000, 'graph.json mtime change')
-check(rebuilt, 'graph.json was rebuilt after a code edit')
+  // Let any remaining code-event batch drain before establishing the doc baseline.
+  await delay(DEBOUNCE_MS + 1000)
+  const beforeDoc = snapshotGraph(graphPath)
+  console.log('\n[3] a fresh document event flags without rebuilding')
+  if (existsSync(flagPath)) unlinkSync(flagPath)
+  check(!existsSync(flagPath), 'old scratch needs_update flag is absent before the edit')
+  const docCursor = ctx.lines.length
+  appendFileSync(docFile, `\nSmoke document event: ${symbol}.\n`, 'utf8')
+  await waitFor(() => {
+    const fresh = ctx.lines.slice(docCursor)
+    const event = fresh.findIndex(line => /\d+ file\(s\) changed/i.test(line))
+    const notice = fresh.findIndex((line, index) => index > event && /non-code files changed/i.test(line))
+    const completed = fresh.findIndex((line, index) => index > notice && /Flag written to .*needs_update/i.test(line))
+    return event >= 0 && notice > event && completed > notice && existsSync(flagPath)
+  }, 30_000, 'this document event, non-code notification, and completed fresh flag write')
+  check(true, 'this document edit produced a new needs_update flag and completion log')
 
-console.log('\n[3] doc change flags without rebuilding')
-const afterCode = mtime()
-const flagBefore = existsSync(flagPath)
-appendFileSync(docFile, '\nSmoke test touch.\n', 'utf8')
-const flagged = await waitFor(() => existsSync(flagPath), 30_000, 'needs_update flag')
-check(flagged, 'needs_update flag was written for a doc edit')
-check(mtime() === afterCode, 'graph.json was NOT touched by the doc edit')
-if (flagBefore) console.log('  note: needs_update already existed before this run')
-
-console.log('\n[4] disposal stops the watcher')
-if (typeof ctx.dispose === 'function') {
-  ctx.dispose()
-  check(logged.some((l) => l.m.includes('stopping watcher')), 'teardown logged the stop')
-} else {
-  check(false, 'ctx.effect captured a disposer')
+  // Observe more than two full 3-second debounce periods after completion. Check
+  // throughout the interval so a delayed graph rewrite cannot pass accidentally.
+  const deadline = Date.now() + 2 * DEBOUNCE_MS + 1000
+  do {
+    const current = snapshotGraph(graphPath)
+    assert.equal(current.mtimeMs, beforeDoc.mtimeMs, 'document edit must preserve graph.json mtime')
+    assert(current.content.equals(beforeDoc.content), 'document edit must preserve graph.json bytes')
+    await delay(500)
+  } while (Date.now() < deadline)
+  const afterDoc = snapshotGraph(graphPath)
+  check(afterDoc.mtimeMs === beforeDoc.mtimeMs && afterDoc.content.equals(beforeDoc.content),
+    'graph.json content and mtime stayed unchanged across document debounce cycles')
+} catch (error) {
+  fail(error)
+} finally {
+  console.log('\n[4] awaited disposal removes the observed process tree')
+  // Capture again before stopping, including descendants created after readiness.
+  try { if (processes.pids.size) processes.capture() } catch (error) { fail(error) }
+  try {
+    check(typeof ctx.dispose === 'function', 'disposer is available for teardown')
+    await ctx.dispose()
+  } catch (error) { fail(error) }
+  try { await processes.assertGone() } catch (error) { fail(error) }
 }
 
-await delay(1500)
 console.log(`\n${failures.length === 0 ? 'ALL CHECKS PASSED' : `FAILURES: ${failures.length}`}`)
-for (const f of failures) console.log(`  - ${f}`)
-process.exit(failures.length === 0 ? 0 : 1)
+for (const failure of failures) console.error(`  - ${failure}`)
+// A failed teardown must report failure even if an orphan still holds a pipe.
+if (failures.length) process.exit(1)
